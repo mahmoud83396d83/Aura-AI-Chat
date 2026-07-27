@@ -1,0 +1,6 @@
+{
+  "name": "Aura AI Chat",
+  "description": "A premium, ultra-fast AI chat application and intelligent agent powered by Gemini and OpenRouter (supporting DeepSeek R1, Claude, and GPT models) with full reasoning tokens details and offline local SQLite history.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
