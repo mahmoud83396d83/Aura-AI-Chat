@@ -29,63 +29,78 @@ object AdManager {
                 Log.d(TAG, "AdMob initialized: $initializationStatus")
                 loadInterstitial(context.applicationContext)
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Error initializing MobileAds", e)
         }
     }
 
     fun loadInterstitial(context: Context) {
-        if (interstitialAd != null || isLoading) return
+        try {
+            if (interstitialAd != null || isLoading) return
 
-        isLoading = true
-        val adRequest = AdRequest.Builder().build()
+            isLoading = true
+            val adRequest = AdRequest.Builder().build()
 
-        InterstitialAd.load(
-            context,
-            AD_UNIT_ID,
-            adRequest,
-            object : InterstitialAdLoadCallback() {
-                override fun onAdLoaded(ad: InterstitialAd) {
-                    Log.d(TAG, "Interstitial ad loaded successfully.")
-                    interstitialAd = ad
-                    isLoading = false
+            InterstitialAd.load(
+                context,
+                AD_UNIT_ID,
+                adRequest,
+                object : InterstitialAdLoadCallback() {
+                    override fun onAdLoaded(ad: InterstitialAd) {
+                        Log.d(TAG, "Interstitial ad loaded successfully.")
+                        interstitialAd = ad
+                        isLoading = false
+                    }
+
+                    override fun onAdFailedToLoad(loadAdError: LoadAdError) {
+                        Log.e(TAG, "Interstitial ad failed to load: ${loadAdError.message}")
+                        interstitialAd = null
+                        isLoading = false
+                    }
                 }
-
-                override fun onAdFailedToLoad(loadAdError: LoadAdError) {
-                    Log.e(TAG, "Interstitial ad failed to load: ${loadAdError.message}")
-                    interstitialAd = null
-                    isLoading = false
-                }
-            }
-        )
+            )
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error loading interstitial ad", e)
+            isLoading = false
+        }
     }
 
     fun showInterstitial(activity: Activity, onAdDismissed: (() -> Unit)? = null) {
-        val ad = interstitialAd
-        if (ad != null) {
-            ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-                override fun onAdDismissedFullScreenContent() {
-                    Log.d(TAG, "Interstitial ad dismissed.")
-                    interstitialAd = null
-                    loadInterstitial(activity.applicationContext)
-                    onAdDismissed?.invoke()
-                }
-
-                override fun onAdFailedToShowFullScreenContent(adError: AdError) {
-                    Log.e(TAG, "Interstitial ad failed to show: ${adError.message}")
-                    interstitialAd = null
-                    loadInterstitial(activity.applicationContext)
-                    onAdDismissed?.invoke()
-                }
-
-                override fun onAdShowedFullScreenContent() {
-                    Log.d(TAG, "Interstitial ad showed full screen.")
-                }
+        try {
+            if (activity.isFinishing || activity.isDestroyed) {
+                onAdDismissed?.invoke()
+                return
             }
-            ad.show(activity)
-        } else {
-            Log.d(TAG, "Interstitial ad not ready yet. Loading for next time.")
-            loadInterstitial(activity.applicationContext)
+
+            val ad = interstitialAd
+            if (ad != null) {
+                ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+                    override fun onAdDismissedFullScreenContent() {
+                        Log.d(TAG, "Interstitial ad dismissed.")
+                        interstitialAd = null
+                        loadInterstitial(activity.applicationContext)
+                        onAdDismissed?.invoke()
+                    }
+
+                    override fun onAdFailedToShowFullScreenContent(adError: AdError) {
+                        Log.e(TAG, "Interstitial ad failed to show: ${adError.message}")
+                        interstitialAd = null
+                        loadInterstitial(activity.applicationContext)
+                        onAdDismissed?.invoke()
+                    }
+
+                    override fun onAdShowedFullScreenContent() {
+                        Log.d(TAG, "Interstitial ad showed full screen.")
+                    }
+                }
+                ad.show(activity)
+            } else {
+                Log.d(TAG, "Interstitial ad not ready yet. Loading for next time.")
+                loadInterstitial(activity.applicationContext)
+                onAdDismissed?.invoke()
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error showing interstitial ad safely", e)
             onAdDismissed?.invoke()
         }
     }
@@ -94,10 +109,14 @@ object AdManager {
      * Call when user sends a message. Shows ad every 3 messages.
      */
     fun onUserAction(activity: Activity) {
-        messageCounter++
-        if (messageCounter >= MESSAGES_BETWEEN_ADS) {
-            messageCounter = 0
-            showInterstitial(activity)
+        try {
+            messageCounter++
+            if (messageCounter >= MESSAGES_BETWEEN_ADS) {
+                messageCounter = 0
+                showInterstitial(activity)
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error handling user action ad", e)
         }
     }
 
@@ -105,6 +124,11 @@ object AdManager {
      * Call when switching chat sessions or creating new session.
      */
     fun onSessionChanged(activity: Activity) {
-        showInterstitial(activity)
+        try {
+            showInterstitial(activity)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error handling session changed ad", e)
+        }
     }
 }
+

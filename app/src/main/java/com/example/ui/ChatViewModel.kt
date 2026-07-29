@@ -2,12 +2,15 @@ package com.example.ui
 
 import android.app.Application
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
 import com.example.data.ChatMessage
 import com.example.data.ChatRepository
 import com.example.data.ChatSession
+import com.example.data.api.AiRetrofitClient
+import com.example.data.api.OpenRouterModelItem
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -47,15 +50,19 @@ class ChatViewModel(
     private val _isAiLoading = MutableStateFlow(false)
     val isAiLoading: StateFlow<Boolean> = _isAiLoading.asStateFlow()
 
-    // Key overrides
-    private val _geminiApiKey = MutableStateFlow(sharedPrefs.getString("gemini_key", "") ?: "")
-    val geminiApiKey: StateFlow<String> = _geminiApiKey.asStateFlow()
-
+    // Key override (OpenRouter Only as requested)
     private val _openRouterApiKey = MutableStateFlow(sharedPrefs.getString("openrouter_key", "") ?: "")
     val openRouterApiKey: StateFlow<String> = _openRouterApiKey.asStateFlow()
 
-    // Model selection
-    private val _selectedModel = MutableStateFlow(sharedPrefs.getString("selected_model", "gemini-2.5-flash") ?: "gemini-2.5-flash")
+    // OpenRouter Models State
+    private val _availableModels = MutableStateFlow<List<OpenRouterModelItem>>(emptyList())
+    val availableModels: StateFlow<List<OpenRouterModelItem>> = _availableModels.asStateFlow()
+
+    private val _isFetchingModels = MutableStateFlow(false)
+    val isFetchingModels: StateFlow<Boolean> = _isFetchingModels.asStateFlow()
+
+    // Model selection (default to a top free openrouter model)
+    private val _selectedModel = MutableStateFlow(sharedPrefs.getString("selected_model", "deepseek/deepseek-r1:free") ?: "deepseek/deepseek-r1:free")
     val selectedModel: StateFlow<String> = _selectedModel.asStateFlow()
 
     private val _customModel = MutableStateFlow(sharedPrefs.getString("custom_model", "") ?: "")
@@ -66,14 +73,36 @@ class ChatViewModel(
     val selectedPersonality: StateFlow<Personality> = _selectedPersonality.asStateFlow()
 
     init {
-        // Automatically create a default session if there are none
+        // Automatically create a default session if there are none on startup
         viewModelScope.launch {
-            sessions.collect { sessionList ->
-                if (sessionList.isEmpty() && _activeSessionId.value == null) {
-                    createNewSession("First Chat")
-                } else if (_activeSessionId.value == null && sessionList.isNotEmpty()) {
+            try {
+                val sessionList = sessions.first()
+                if (sessionList.isEmpty()) {
+                    createNewSession("محادثة جديدة 1")
+                } else if (_activeSessionId.value == null) {
                     _activeSessionId.value = sessionList.first().id
                 }
+            } catch (e: Throwable) {
+                Log.e("ChatViewModel", "Error initializing session", e)
+            }
+        }
+
+        // Fetch OpenRouter models dynamically
+        fetchOpenRouterModels()
+    }
+
+    fun fetchOpenRouterModels() {
+        viewModelScope.launch {
+            _isFetchingModels.value = true
+            try {
+                val response = AiRetrofitClient.openRouterApi.getModels()
+                response.data?.let { models ->
+                    _availableModels.value = models
+                }
+            } catch (e: Exception) {
+                Log.e("ChatViewModel", "Failed to fetch OpenRouter models", e)
+            } finally {
+                _isFetchingModels.value = false
             }
         }
     }
@@ -82,7 +111,7 @@ class ChatViewModel(
         GENERAL(
             "General Assistant", 
             "Smart general purpose helper chatbot", 
-            "You are a world-class AI Chat Assistant named Aura. Answer elegantly, accurately, and dynamically in English."
+            "You are a world-class AI Chat Assistant named Aura. You can write code, analyze data, generate tables/charts, create slides/presentations, and answer detailed questions. Answer clearly with clean Markdown formatting."
         ),
         DEVELOPER(
             "Coding Agent", 
@@ -90,9 +119,14 @@ class ChatViewModel(
             "You are Aura Developer Agent. You write perfect, secure, clean, and highly optimized code (Kotlin, Java, Python, JavaScript, SQL etc.). Explain choices concisely, use Markdown formatting with proper code blocks, and adhere to industry best practices."
         ),
         DATA_EXTRACTOR(
-            "Data Extractor", 
-            "Structured parser & table organizer", 
-            "You are a specialized Data Extraction and Analysis Agent. Your job is to extract all tables, metrics, entities, values, or JSON structures from user inputs and present them in highly readable markdown tables or structured formats."
+            "Data & Excel Expert", 
+            "Structured tables, Excel CSV & metrics", 
+            "You are a specialized Data & Excel Specialist Agent. Output structured tables, CSV data formats, metrics, and organized datasets that can be easily exported or viewed as spreadsheets."
+        ),
+        SLIDES_CREATOR(
+            "Slides & Presentation Maker", 
+            "PowerPoint, Pitch Decks & Document Slides", 
+            "You are a Presentation & Document Designer Agent. Format responses into structured presentation slide sections (using '---' between slides, with clear Titles, Bullet points, Key Takeaways, and Visual summaries) ideal for exporting to PowerPoint, PDF, or document slides."
         ),
         CREATIVE_WRITER(
             "Creative Writer", 
@@ -142,18 +176,14 @@ class ChatViewModel(
         _selectedPersonality.value = personality
     }
 
-    fun saveGeminiApiKey(key: String) {
-        _geminiApiKey.value = key
-        sharedPrefs.edit().putString("gemini_key", key).apply()
-    }
-
     fun saveOpenRouterApiKey(key: String) {
         _openRouterApiKey.value = key
         sharedPrefs.edit().putString("openrouter_key", key).apply()
+        fetchOpenRouterModels()
     }
 
-    fun sendMessage(content: String) {
-        if (content.isBlank()) return
+    fun sendMessage(content: String, imageUri: String? = null) {
+        if (content.isBlank() && imageUri.isNullOrBlank()) return
         val sessionId = _activeSessionId.value ?: return
 
         viewModelScope.launch {
@@ -161,18 +191,17 @@ class ChatViewModel(
             val userMsg = ChatMessage(
                 sessionId = sessionId,
                 role = "user",
-                content = content
+                content = content,
+                imageUri = imageUri
             )
             repository.saveMessage(userMsg)
 
             _isAiLoading.value = true
 
-            // Resolve actual API keys
-            val finalGeminiKey = _geminiApiKey.value.ifBlank { BuildConfig.GEMINI_API_KEY }
+            // Resolve API key
             val finalOpenRouterKey = _openRouterApiKey.value.ifBlank { BuildConfig.OPENROUTER_API_KEY }
 
             val model = _selectedModel.value
-            val isGemini = model.startsWith("gemini-") || (!model.contains("/") && !model.contains(":"))
 
             // Retrieve conversation history
             val history = activeSessionMessages.value
@@ -181,10 +210,10 @@ class ChatViewModel(
             val aiResponse = repository.sendAiRequest(
                 sessionId = sessionId,
                 modelName = model,
-                isGemini = isGemini,
+                isGemini = false,
                 messages = history,
                 systemInstruction = _selectedPersonality.value.systemInstruction,
-                geminiApiKey = finalGeminiKey,
+                geminiApiKey = "",
                 openRouterApiKey = finalOpenRouterKey
             )
 
@@ -194,10 +223,43 @@ class ChatViewModel(
             // Update session title dynamically if it is a placeholder
             val currentSession = sessions.value.find { it.id == sessionId }
             if (currentSession != null && (currentSession.title.startsWith("First Chat") || currentSession.title == "New Chat")) {
-                val previewTitle = if (content.length > 25) content.take(22) + "..." else content
+                val previewTitle = if (content.length > 25) content.take(22) + "..." else if (!imageUri.isNullOrBlank()) "Photo Query" else content
                 repository.updateSessionTitle(sessionId, previewTitle)
             }
 
+            _isAiLoading.value = false
+        }
+    }
+
+    fun generateImage(prompt: String) {
+        if (prompt.isBlank()) return
+        val sessionId = _activeSessionId.value ?: return
+
+        viewModelScope.launch {
+            // Save user prompt
+            val userMsg = ChatMessage(
+                sessionId = sessionId,
+                role = "user",
+                content = "🎨 **طلب إنشاء صورة:** $prompt"
+            )
+            repository.saveMessage(userMsg)
+
+            _isAiLoading.value = true
+
+            // Generate image via high performance Pollinations / Flux API URL
+            val encodedPrompt = java.net.URLEncoder.encode(prompt, "UTF-8")
+            val imageUrl = "https://image.pollinations.ai/prompt/$encodedPrompt?width=1024&height=1024&nologo=true&seed=${System.currentTimeMillis()}"
+
+            val aiResponse = ChatMessage(
+                sessionId = sessionId,
+                role = "assistant",
+                content = "🖼️ **تم إنشاء الصورة بنجاح!**\n\nإليك الصورة الناتجة بناءً على الوصف: *\"$prompt\"*\n\n![Generated Image]($imageUrl)",
+                modelName = "Pollinations FLUX.1",
+                imageUri = imageUrl,
+                latencyMs = 1200
+            )
+
+            repository.saveMessage(aiResponse)
             _isAiLoading.value = false
         }
     }

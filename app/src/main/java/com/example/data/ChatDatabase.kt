@@ -32,7 +32,9 @@ data class ChatMessage(
     val promptTokens: Int = 0,
     val completionTokens: Int = 0,
     val reasoningTokens: Int = 0,
-    val latencyMs: Long = 0
+    val latencyMs: Long = 0,
+    val imageUri: String? = null,
+    val reasoningContent: String? = null
 )
 
 @Dao

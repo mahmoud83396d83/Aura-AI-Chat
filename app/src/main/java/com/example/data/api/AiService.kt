@@ -1,8 +1,10 @@
 package com.example.data.api
 
+import com.squareup.moshi.FromJson
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
+import com.squareup.moshi.ToJson
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -52,22 +54,91 @@ interface GeminiApi {
 // --- OpenRouter Models & API ---
 
 @JsonClass(generateAdapter = true)
-data class OpenRouterMessage(
-    @field:Json(name = "role") val role: String, // "user", "assistant", "system"
-    @field:Json(name = "content") val content: String
+data class OpenRouterImageUrl(
+    @field:Json(name = "url") val url: String
 )
+
+@JsonClass(generateAdapter = true)
+data class OpenRouterContentPart(
+    @field:Json(name = "type") val type: String, // "text" or "image_url"
+    @field:Json(name = "text") val text: String? = null,
+    @field:Json(name = "image_url") val imageUrl: OpenRouterImageUrl? = null
+)
+
+data class OpenRouterMessage(
+    val role: String, // "user", "assistant", "system"
+    val content: Any // String or List<OpenRouterContentPart>
+)
+
+class OpenRouterMessageAdapter {
+    @ToJson
+    fun toJson(writer: com.squareup.moshi.JsonWriter, message: OpenRouterMessage) {
+        writer.beginObject()
+        writer.name("role").value(message.role)
+        writer.name("content")
+        when (val c = message.content) {
+            is String -> writer.value(c)
+            is List<*> -> {
+                writer.beginArray()
+                for (item in c) {
+                    if (item is OpenRouterContentPart) {
+                        writer.beginObject()
+                        writer.name("type").value(item.type)
+                        if (item.text != null) {
+                            writer.name("text").value(item.text)
+                        }
+                        if (item.imageUrl != null) {
+                            writer.name("image_url")
+                            writer.beginObject()
+                            writer.name("url").value(item.imageUrl.url)
+                            writer.endObject()
+                        }
+                        writer.endObject()
+                    }
+                }
+                writer.endArray()
+            }
+            else -> writer.value(c.toString())
+        }
+        writer.endObject()
+    }
+
+    @FromJson
+    fun fromJson(reader: com.squareup.moshi.JsonReader): OpenRouterMessage {
+        var role = "user"
+        var content: Any = ""
+        reader.beginObject()
+        while (reader.hasNext()) {
+            when (reader.nextName()) {
+                "role" -> role = reader.nextString()
+                "content" -> {
+                    if (reader.peek() == com.squareup.moshi.JsonReader.Token.STRING) {
+                        content = reader.nextString()
+                    } else {
+                        reader.skipValue()
+                    }
+                }
+                else -> reader.skipValue()
+            }
+        }
+        reader.endObject()
+        return OpenRouterMessage(role = role, content = content)
+    }
+}
 
 @JsonClass(generateAdapter = true)
 data class OpenRouterRequest(
     @field:Json(name = "model") val model: String,
     @field:Json(name = "messages") val messages: List<OpenRouterMessage>,
-    @field:Json(name = "temperature") val temperature: Double? = null
+    @field:Json(name = "temperature") val temperature: Double? = null,
+    @field:Json(name = "include_reasoning") val includeReasoning: Boolean? = true
 )
 
 @JsonClass(generateAdapter = true)
 data class OpenRouterMessageResponse(
     @field:Json(name = "role") val role: String? = null,
-    @field:Json(name = "content") val content: String? = null
+    @field:Json(name = "content") val content: String? = null,
+    @field:Json(name = "reasoning") val reasoning: String? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -97,6 +168,27 @@ data class OpenRouterResponse(
     @field:Json(name = "model") val model: String? = null
 )
 
+// OpenRouter Models List Data Classes
+@JsonClass(generateAdapter = true)
+data class OpenRouterModelPricing(
+    @field:Json(name = "prompt") val prompt: String? = null,
+    @field:Json(name = "completion") val completion: String? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class OpenRouterModelItem(
+    @field:Json(name = "id") val id: String,
+    @field:Json(name = "name") val name: String? = null,
+    @field:Json(name = "description") val description: String? = null,
+    @field:Json(name = "context_length") val contextLength: Int? = null,
+    @field:Json(name = "pricing") val pricing: OpenRouterModelPricing? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class OpenRouterModelsResponse(
+    @field:Json(name = "data") val data: List<OpenRouterModelItem>? = null
+)
+
 interface OpenRouterApi {
     @POST("api/v1/chat/completions")
     suspend fun chatCompletions(
@@ -105,12 +197,16 @@ interface OpenRouterApi {
         @Header("X-Title") title: String = "SmartAgent",
         @Body request: OpenRouterRequest
     ): OpenRouterResponse
+
+    @GET("api/v1/models")
+    suspend fun getModels(): OpenRouterModelsResponse
 }
 
 // --- Service Client Instantiator ---
 
 object AiRetrofitClient {
     private val moshi = Moshi.Builder()
+        .add(OpenRouterMessageAdapter())
         .add(KotlinJsonAdapterFactory())
         .build()
 

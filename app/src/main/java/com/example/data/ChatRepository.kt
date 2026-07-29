@@ -4,6 +4,8 @@ import com.example.data.api.AiRetrofitClient
 import com.example.data.api.GeminiContent
 import com.example.data.api.GeminiPart
 import com.example.data.api.GeminiRequest
+import com.example.data.api.OpenRouterContentPart
+import com.example.data.api.OpenRouterImageUrl
 import com.example.data.api.OpenRouterMessage
 import com.example.data.api.OpenRouterRequest
 import kotlinx.coroutines.Dispatchers
@@ -40,7 +42,7 @@ class ChatRepository(private val chatDao: ChatDao) {
     }
 
     /**
-     * Sends a chat request to Gemini or OpenRouter and returns the assistant's ChatMessage response.
+     * Sends a chat request to OpenRouter (or Gemini fallback) and returns the assistant's ChatMessage response.
      */
     suspend fun sendAiRequest(
         sessionId: Int,
@@ -56,98 +58,72 @@ class ChatRepository(private val chatDao: ChatDao) {
         var completionTokens = 0
         var reasoningTokens = 0
         var assistantContent = ""
+        var reasoningContent: String? = null
         var actualModel = modelName
 
-        // Validate API keys before making the network request
-        if (isGemini) {
-            if (geminiApiKey.isBlank() || geminiApiKey == "MY_GEMINI_API_KEY") {
-                return@withContext ChatMessage(
-                    sessionId = sessionId,
-                    role = "assistant",
-                    content = "⚠️ **مفتاح Gemini API مطلوب / Gemini API Key Required**\n\nلم يتم تحديد مفتاح **Gemini API Key** صالح.\nيرجى التوجه إلى **الإعدادات (⚙️ Settings)** وإدخال مفتاح Gemini الخاص بك لتشغيل النموذج المباشر.\n\nيمكنك الحصول على مفتاح مجاني من [Google AI Studio](https://aistudio.google.com/app/apikey).",
-                    modelName = modelName
-                )
-            }
-        } else {
-            if (openRouterApiKey.isBlank() || openRouterApiKey == "MY_OPENROUTER_API_KEY") {
-                return@withContext ChatMessage(
-                    sessionId = sessionId,
-                    role = "assistant",
-                    content = "⚠️ **مفتاح OpenRouter API مطلوب / OpenRouter Key Required**\n\nالنموذج المحدد (`$modelName`) يتطلب مفتاح **OpenRouter API Key**.\nيرجى التوجه إلى **الإعدادات (⚙️ Settings)** وإدخال مفتاح OpenRouter، أو قم بتبديل النموذج إلى **Gemini 2.5 Flash** المباشر.\n\nيمكنك الحصول على مفتاح مجاني من [OpenRouter.ai](https://openrouter.ai/keys).",
-                    modelName = modelName
-                )
-            }
+        if (openRouterApiKey.isBlank() || openRouterApiKey == "MY_OPENROUTER_API_KEY") {
+            return@withContext ChatMessage(
+                sessionId = sessionId,
+                role = "assistant",
+                content = "⚠️ **مفتاح OpenRouter API مطلوب / OpenRouter Key Required**\n\nيرجى التوجه إلى **الإعدادات (⚙️ Settings)** وإدخال مفتاح OpenRouter الخاص بك للتواصل مع كافة الموديلات المتاحة.\n\nيمكنك الحصول على مفتاح مجاني من [OpenRouter.ai](https://openrouter.ai/keys).",
+                modelName = modelName
+            )
         }
 
         try {
-            if (isGemini) {
-                // Prepare Gemini request
-                val geminiContents = messages.map { msg ->
-                    // Gemini expects "model" role instead of "assistant"
-                    val roleName = if (msg.role == "assistant") "model" else "user"
-                    GeminiContent(
-                        role = roleName,
-                        parts = listOf(GeminiPart(text = msg.content))
-                    )
-                }
-                
-                val sysInstructionContent = if (systemInstruction.isNotBlank()) {
-                    GeminiContent(parts = listOf(GeminiPart(text = systemInstruction)))
-                } else null
-
-                val request = GeminiRequest(
-                    contents = geminiContents,
-                    systemInstruction = sysInstructionContent
-                )
-
-                val response = AiRetrofitClient.geminiApi.generateContent(
-                    model = modelName,
-                    apiKey = geminiApiKey,
-                    request = request
-                )
-
-                assistantContent = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text 
-                    ?: "⚠️ **لم يتم استلام رد من النموذج** (قد يكون هناك تقييد في إعدادات الأمان للنموذج)."
-                
-                // Estimate tokens if usage isn't provided (word count * 1.3 as a safe heuristic)
-                val totalPromptWords = messages.sumOf { it.content.split("\\s+".toRegex()).size } + systemInstruction.split("\\s+".toRegex()).size
-                val responseWords = assistantContent.split("\\s+".toRegex()).size
-                promptTokens = (totalPromptWords * 1.3).toInt()
-                completionTokens = (responseWords * 1.3).toInt()
-                
-            } else {
-                // Prepare OpenRouter request
-                val openRouterMessages = mutableListOf<OpenRouterMessage>()
-                
-                if (systemInstruction.isNotBlank()) {
-                    openRouterMessages.add(OpenRouterMessage(role = "system", content = systemInstruction))
-                }
-                
-                messages.forEach { msg ->
+            // Prepare OpenRouter multimodal messages
+            val openRouterMessages = mutableListOf<OpenRouterMessage>()
+            
+            if (systemInstruction.isNotBlank()) {
+                openRouterMessages.add(OpenRouterMessage(role = "system", content = systemInstruction))
+            }
+            
+            messages.forEach { msg ->
+                if (!msg.imageUri.isNullOrBlank()) {
+                    val parts = mutableListOf<OpenRouterContentPart>()
+                    if (msg.content.isNotBlank()) {
+                        parts.add(OpenRouterContentPart(type = "text", text = msg.content))
+                    }
+                    parts.add(OpenRouterContentPart(type = "image_url", imageUrl = com.example.data.api.OpenRouterImageUrl(url = msg.imageUri)))
+                    openRouterMessages.add(OpenRouterMessage(role = msg.role, content = parts))
+                } else {
                     openRouterMessages.add(OpenRouterMessage(role = msg.role, content = msg.content))
                 }
+            }
 
-                val request = OpenRouterRequest(
-                    model = modelName,
-                    messages = openRouterMessages,
-                    temperature = 0.7
-                )
+            val request = OpenRouterRequest(
+                model = modelName,
+                messages = openRouterMessages,
+                temperature = 0.7,
+                includeReasoning = true
+            )
 
-                val response = AiRetrofitClient.openRouterApi.chatCompletions(
-                    authorization = "Bearer $openRouterApiKey",
-                    request = request
-                )
+            val response = AiRetrofitClient.openRouterApi.chatCompletions(
+                authorization = "Bearer $openRouterApiKey",
+                request = request
+            )
 
-                assistantContent = response.choices?.firstOrNull()?.message?.content 
-                    ?: "⚠️ **لم يتم استلام رد من OpenRouter.**"
-                
-                actualModel = response.model ?: modelName
-                
-                response.usage?.let { usage ->
-                    promptTokens = usage.promptTokens ?: 0
-                    completionTokens = usage.completionTokens ?: 0
-                    reasoningTokens = usage.completionTokensDetails?.reasoningTokens ?: 0
+            val choice = response.choices?.firstOrNull()
+            var rawContent = choice?.message?.content ?: "⚠️ **لم يتم استلام رد من OpenRouter.**"
+            reasoningContent = choice?.message?.reasoning
+
+            // Extract <think>...</think> if present in the raw text
+            if (rawContent.contains("<think>") && rawContent.contains("</think>")) {
+                val thinkStart = rawContent.indexOf("<think>") + 7
+                val thinkEnd = rawContent.indexOf("</think>")
+                if (thinkEnd > thinkStart) {
+                    reasoningContent = rawContent.substring(thinkStart, thinkEnd).trim()
+                    rawContent = rawContent.replace(Regex("<think>[\\s\\S]*?</think>"), "").trim()
                 }
+            }
+
+            assistantContent = rawContent
+            actualModel = response.model ?: modelName
+            
+            response.usage?.let { usage ->
+                promptTokens = usage.promptTokens ?: 0
+                completionTokens = usage.completionTokens ?: 0
+                reasoningTokens = usage.completionTokensDetails?.reasoningTokens ?: 0
             }
         } catch (e: retrofit2.HttpException) {
             Log.e("ChatRepository", "HTTP Exception code=${e.code()}", e)
@@ -178,7 +154,8 @@ class ChatRepository(private val chatDao: ChatDao) {
             promptTokens = promptTokens,
             completionTokens = completionTokens,
             reasoningTokens = reasoningTokens,
-            latencyMs = latencyMs
+            latencyMs = latencyMs,
+            reasoningContent = reasoningContent
         )
     }
 }

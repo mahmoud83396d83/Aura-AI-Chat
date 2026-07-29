@@ -28,24 +28,33 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Initialize AdMob Interstitial Ads
-        AdManager.init(this)
+        try {
+            // Initialize AdMob Interstitial Ads
+            AdManager.init(this)
+        } catch (t: Throwable) {
+            android.util.Log.e("MainActivity", "AdManager init error", t)
+        }
 
-        // Initialize Local SQLite Database via Room
-        database = Room.databaseBuilder(
-            applicationContext,
-            AppDatabase::class.java,
-            "smart_chat_db"
-        )
-        .fallbackToDestructiveMigration(true)
-        .build()
+        try {
+            // Initialize Local SQLite Database via Room
+            database = Room.databaseBuilder(
+                applicationContext,
+                AppDatabase::class.java,
+                "smart_chat_db"
+            )
+            .fallbackToDestructiveMigration(true)
+            .fallbackToDestructiveMigrationOnDowngrade(true)
+            .build()
 
-        // Initialize Chat Repository with DAO
-        repository = ChatRepository(database.chatDao())
+            // Initialize Chat Repository with DAO
+            repository = ChatRepository(database.chatDao())
 
-        // Create the ChatViewModel utilizing our ViewModel Factory
-        val factory = ChatViewModelFactory(application, repository)
-        viewModel = ViewModelProvider(this, factory)[ChatViewModel::class.java]
+            // Create the ChatViewModel utilizing our ViewModel Factory
+            val factory = ChatViewModelFactory(application, repository)
+            viewModel = ViewModelProvider(this, factory)[ChatViewModel::class.java]
+        } catch (t: Throwable) {
+            android.util.Log.e("MainActivity", "Database/ViewModel initialization error", t)
+        }
 
         setContent {
             MyApplicationTheme {
@@ -53,10 +62,12 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    ChatScreen(
-                        viewModel = viewModel,
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    if (::viewModel.isInitialized) {
+                        ChatScreen(
+                            viewModel = viewModel,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
             }
         }
