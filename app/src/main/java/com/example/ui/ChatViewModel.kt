@@ -72,6 +72,10 @@ class ChatViewModel(
     private val _selectedPersonality = MutableStateFlow(Personality.GENERAL)
     val selectedPersonality: StateFlow<Personality> = _selectedPersonality.asStateFlow()
 
+    // Reply to specific message state
+    private val _replyToMessage = MutableStateFlow<ChatMessage?>(null)
+    val replyToMessage: StateFlow<ChatMessage?> = _replyToMessage.asStateFlow()
+
     init {
         // Automatically create a default session if there are none on startup
         viewModelScope.launch {
@@ -182,19 +186,33 @@ class ChatViewModel(
         fetchOpenRouterModels()
     }
 
+    fun setReplyToMessage(message: ChatMessage?) {
+        _replyToMessage.value = message
+    }
+
     fun sendMessage(content: String, imageUri: String? = null) {
         if (content.isBlank() && imageUri.isNullOrBlank()) return
         val sessionId = _activeSessionId.value ?: return
+
+        val replyTarget = _replyToMessage.value
+        _replyToMessage.value = null
+
+        val finalContent = if (replyTarget != null) {
+            val snippet = replyTarget.content.replace(Regex("[#*`_~]"), "").take(90)
+            "↩️ **رد على [${replyTarget.role}]:** \"$snippet...\"\n\n$content"
+        } else {
+            content
+        }
 
         viewModelScope.launch {
             // Save user message
             val userMsg = ChatMessage(
                 sessionId = sessionId,
                 role = "user",
-                content = content,
+                content = finalContent,
                 imageUri = imageUri
             )
-            repository.saveMessage(userMsg)
+            val userMsgId = repository.saveMessage(userMsg)
 
             _isAiLoading.value = true
 
@@ -203,15 +221,20 @@ class ChatViewModel(
 
             val model = _selectedModel.value
 
-            // Retrieve conversation history
-            val history = activeSessionMessages.value
+            // Retrieve conversation history safely including the newly added message
+            val currentHistory = activeSessionMessages.value
+            val historyToSend = if (currentHistory.any { it.id == userMsgId.toInt() || (it.content == finalContent && it.role == "user") }) {
+                currentHistory
+            } else {
+                currentHistory + userMsg
+            }
 
             // Send to AI
             val aiResponse = repository.sendAiRequest(
                 sessionId = sessionId,
                 modelName = model,
                 isGemini = false,
-                messages = history,
+                messages = historyToSend,
                 systemInstruction = _selectedPersonality.value.systemInstruction,
                 geminiApiKey = "",
                 openRouterApiKey = finalOpenRouterKey
@@ -222,11 +245,56 @@ class ChatViewModel(
 
             // Update session title dynamically if it is a placeholder
             val currentSession = sessions.value.find { it.id == sessionId }
-            if (currentSession != null && (currentSession.title.startsWith("First Chat") || currentSession.title == "New Chat")) {
-                val previewTitle = if (content.length > 25) content.take(22) + "..." else if (!imageUri.isNullOrBlank()) "Photo Query" else content
+            if (currentSession != null && (currentSession.title.startsWith("First Chat") || currentSession.title == "New Chat" || currentSession.title.startsWith("محادثة جديدة"))) {
+                val previewTitle = if (content.length > 25) content.take(22) + "..." else if (!imageUri.isNullOrBlank()) "صورة استفسار" else content
                 repository.updateSessionTitle(sessionId, previewTitle)
             }
 
+            _isAiLoading.value = false
+        }
+    }
+
+    fun clearActiveSessionMessages() {
+        val sessionId = _activeSessionId.value ?: return
+        viewModelScope.launch {
+            repository.clearSessionMessages(sessionId)
+        }
+    }
+
+    fun deleteSingleMessage(messageId: Int) {
+        viewModelScope.launch {
+            repository.deleteMessage(messageId)
+        }
+    }
+
+    fun regenerateLastResponse() {
+        val sessionId = _activeSessionId.value ?: return
+        val messages = activeSessionMessages.value
+        if (messages.isEmpty() || _isAiLoading.value) return
+
+        viewModelScope.launch {
+            val lastMsg = messages.last()
+            if (lastMsg.role == "assistant") {
+                repository.deleteMessage(lastMsg.id)
+            }
+            val remainingMsgs = messages.filter { it.id != lastMsg.id || lastMsg.role != "assistant" }
+            val lastUserMsg = remainingMsgs.lastOrNull { it.role == "user" } ?: return@launch
+
+            _isAiLoading.value = true
+            val finalOpenRouterKey = _openRouterApiKey.value.ifBlank { BuildConfig.OPENROUTER_API_KEY }
+            val model = _selectedModel.value
+
+            val aiResponse = repository.sendAiRequest(
+                sessionId = sessionId,
+                modelName = model,
+                isGemini = false,
+                messages = remainingMsgs,
+                systemInstruction = _selectedPersonality.value.systemInstruction,
+                geminiApiKey = "",
+                openRouterApiKey = finalOpenRouterKey
+            )
+
+            repository.saveMessage(aiResponse)
             _isAiLoading.value = false
         }
     }

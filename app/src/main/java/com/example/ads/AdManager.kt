@@ -21,7 +21,9 @@ object AdManager {
     private var interstitialAd: InterstitialAd? = null
     private var isLoading = false
     private var messageCounter = 0
-    private const val MESSAGES_BETWEEN_ADS = 3
+    private var lastAdShowTimestamp: Long = 0L
+    private const val MESSAGES_BETWEEN_ADS = 8 // Reduced ad frequency
+    private const val MIN_AD_INTERVAL_MS = 240_000L // Minimum 4 minutes between ads
 
     fun init(context: Context) {
         try {
@@ -72,11 +74,19 @@ object AdManager {
                 return
             }
 
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - lastAdShowTimestamp < MIN_AD_INTERVAL_MS) {
+                Log.d(TAG, "Skipping ad show: Minimum time interval (4 mins) has not elapsed yet.")
+                onAdDismissed?.invoke()
+                return
+            }
+
             val ad = interstitialAd
             if (ad != null) {
                 ad.fullScreenContentCallback = object : FullScreenContentCallback() {
                     override fun onAdDismissedFullScreenContent() {
                         Log.d(TAG, "Interstitial ad dismissed.")
+                        lastAdShowTimestamp = System.currentTimeMillis()
                         interstitialAd = null
                         loadInterstitial(activity.applicationContext)
                         onAdDismissed?.invoke()
@@ -91,6 +101,7 @@ object AdManager {
 
                     override fun onAdShowedFullScreenContent() {
                         Log.d(TAG, "Interstitial ad showed full screen.")
+                        lastAdShowTimestamp = System.currentTimeMillis()
                     }
                 }
                 ad.show(activity)
@@ -106,7 +117,7 @@ object AdManager {
     }
 
     /**
-     * Call when user sends a message. Shows ad every 3 messages.
+     * Call when user sends a message. Shows ad every 8 messages.
      */
     fun onUserAction(activity: Activity) {
         try {
@@ -121,14 +132,10 @@ object AdManager {
     }
 
     /**
-     * Call when switching chat sessions or creating new session.
+     * Call when switching chat sessions. Only checks without forcing.
      */
     fun onSessionChanged(activity: Activity) {
-        try {
-            showInterstitial(activity)
-        } catch (e: Throwable) {
-            Log.e(TAG, "Error handling session changed ad", e)
-        }
+        // Intentionally kept passive to avoid bothering users on session switches
     }
 }
 

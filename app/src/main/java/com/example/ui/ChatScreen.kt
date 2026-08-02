@@ -13,6 +13,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,7 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -72,17 +74,64 @@ fun ChatScreen(
 
     val availableModels by viewModel.availableModels.collectAsState()
     val isFetchingModels by viewModel.isFetchingModels.collectAsState()
+    val replyToMessage by viewModel.replyToMessage.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
     var showModelDialog by remember { mutableStateOf(false) }
     var showImageGenDialog by remember { mutableStateOf(false) }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var isSearchActive by remember { mutableStateOf(false) }
+    var showOverflowMenu by remember { mutableStateOf(false) }
+    var showClearConfirmDialog by remember { mutableStateOf(false) }
 
     // Image Picker Launcher for Vision
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         selectedImageUri = uri
+    }
+
+    var voiceDictatedText by remember { mutableStateOf<String?>(null) }
+    val voiceLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spokenText = result.data
+                ?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+            if (!spokenText.isNullOrBlank()) {
+                voiceDictatedText = spokenText
+            }
+        }
+    }
+
+    var ttsEngine by remember { mutableStateOf<android.speech.tts.TextToSpeech?>(null) }
+    var speakingMessageId by remember { mutableStateOf<Int?>(null) }
+
+    DisposableEffect(context) {
+        val tts = android.speech.tts.TextToSpeech(context) { status ->
+            if (status == android.speech.tts.TextToSpeech.SUCCESS) {
+                // TTS ready
+            }
+        }
+        ttsEngine = tts
+        onDispose {
+            tts.stop()
+            tts.shutdown()
+        }
+    }
+
+    fun toggleSpeak(messageId: Int, text: String) {
+        if (speakingMessageId == messageId) {
+            ttsEngine?.stop()
+            speakingMessageId = null
+        } else {
+            ttsEngine?.stop()
+            speakingMessageId = messageId
+            val cleanText = text.replace(Regex("[#*`_~]"), "").take(1000)
+            ttsEngine?.speak(cleanText, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "msg_$messageId")
+        }
     }
 
     ModalNavigationDrawer(
@@ -200,43 +249,114 @@ fun ChatScreen(
                             .statusBarsPadding()
                     ) {
                         // Top Header Row
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                                    Icon(Icons.Default.Menu, contentDescription = "Menu Drawer")
+                        if (isSearchActive) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(onClick = {
+                                    isSearchActive = false
+                                    searchQuery = ""
+                                }) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "إغلاق البحث")
                                 }
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Aura AI Client",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold
+                                TextField(
+                                    value = searchQuery,
+                                    onValueChange = { searchQuery = it },
+                                    placeholder = { Text("بحث في المحادثة...", fontSize = 13.sp) },
+                                    singleLine = true,
+                                    colors = TextFieldDefaults.colors(
+                                        focusedContainerColor = Color.Transparent,
+                                        unfocusedContainerColor = Color.Transparent,
+                                        disabledContainerColor = Color.Transparent
+                                    ),
+                                    modifier = Modifier.weight(1f)
                                 )
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { searchQuery = "" }) {
+                                        Icon(Icons.Default.Clear, contentDescription = "مسح")
+                                    }
+                                }
                             }
-
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                // Image Gen Quick Action
-                                IconButton(onClick = { showImageGenDialog = true }) {
-                                    Icon(Icons.Default.AutoAwesome, contentDescription = "Generate Image", tint = MaterialTheme.colorScheme.primary)
+                        } else {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                        Icon(Icons.Default.Menu, contentDescription = "Menu Drawer")
+                                    }
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Aura AI Client",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
 
-                                // Settings Action Button
-                                IconButton(onClick = { showSettings = true }) {
-                                    BadgedBox(
-                                        badge = {
-                                            if (openRouterKey.isNotBlank()) {
-                                                Badge(containerColor = Color(0xFF4CAF50)) {
-                                                    Icon(Icons.Default.Check, "Connected", modifier = Modifier.size(8.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    // Search Action Button
+                                    IconButton(onClick = { isSearchActive = true }) {
+                                        Icon(Icons.Default.Search, contentDescription = "بحث في المحادثة")
+                                    }
+
+                                    // Image Gen Quick Action
+                                    IconButton(onClick = { showImageGenDialog = true }) {
+                                        Icon(Icons.Default.AutoAwesome, contentDescription = "Generate Image", tint = MaterialTheme.colorScheme.primary)
+                                    }
+
+                                    // Settings Action Button
+                                    IconButton(onClick = { showSettings = true }) {
+                                        BadgedBox(
+                                            badge = {
+                                                if (openRouterKey.isNotBlank()) {
+                                                    Badge(containerColor = Color(0xFF4CAF50)) {
+                                                        Icon(Icons.Default.Check, "Connected", modifier = Modifier.size(8.dp))
+                                                    }
                                                 }
                                             }
+                                        ) {
+                                            Icon(Icons.Default.Settings, contentDescription = "Settings")
                                         }
-                                    ) {
-                                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                                    }
+
+                                    // Overflow Options Menu
+                                    Box {
+                                        IconButton(onClick = { showOverflowMenu = true }) {
+                                            Icon(Icons.Default.MoreVert, contentDescription = "خيارات إضافية")
+                                        }
+                                        DropdownMenu(
+                                            expanded = showOverflowMenu,
+                                            onDismissRequest = { showOverflowMenu = false }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("📤 تصدير المحادثة (Share)") },
+                                                onClick = {
+                                                    showOverflowMenu = false
+                                                    if (messages.isNotEmpty()) {
+                                                        val transcript = messages.joinToString("\n\n---\n\n") { msg ->
+                                                            "📌 [${if (msg.role == "user") "أنت" else "المساعد ${msg.modelName}"}]:\n${msg.content}"
+                                                        }
+                                                        shareTextMessage(context, transcript)
+                                                    } else {
+                                                        Toast.makeText(context, "المحادثة فارغة", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("🧹 مسح المحادثة الحالية", color = MaterialTheme.colorScheme.error) },
+                                                onClick = {
+                                                    showOverflowMenu = false
+                                                    showClearConfirmDialog = true
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -335,10 +455,50 @@ fun ChatScreen(
                     tonalElevation = 8.dp,
                     color = MaterialTheme.colorScheme.surface,
                     modifier = Modifier
-                        .imePadding()
                         .navigationBarsPadding()
+                        .imePadding()
                 ) {
                     Column {
+                        // Reply Preview Banner Box
+                        replyToMessage?.let { reply ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f))
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column {
+                                        Text(
+                                            text = "رد على ${if (reply.role == "user") "رسالتك" else "المساعد"}:",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Text(
+                                            text = reply.content.replace(Regex("[#*`_~]"), ""),
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                IconButton(
+                                    onClick = { viewModel.setReplyToMessage(null) },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "إلغاء الرد", tint = Color.Gray, modifier = Modifier.size(14.dp))
+                                }
+                            }
+                        }
+
                         // Image Attachment Preview Box
                         selectedImageUri?.let { uri ->
                             Row(
@@ -400,8 +560,48 @@ fun ChatScreen(
                             }
                         }
 
+                        // Personality Selector Chips Row
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            ChatViewModel.Personality.values().forEach { personality ->
+                                val isSelected = selectedPersonality == personality
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { viewModel.selectPersonality(personality) },
+                                    label = { Text(personality.displayName, fontSize = 11.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) },
+                                    leadingIcon = {
+                                        val icon = when (personality) {
+                                            ChatViewModel.Personality.GENERAL -> Icons.Default.SmartToy
+                                            ChatViewModel.Personality.DEVELOPER -> Icons.Default.Code
+                                            ChatViewModel.Personality.DATA_EXTRACTOR -> Icons.Default.TableChart
+                                            ChatViewModel.Personality.SLIDES_CREATOR -> Icons.Default.Slideshow
+                                            ChatViewModel.Personality.CREATIVE_WRITER -> Icons.Default.EditNote
+                                        }
+                                        Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                )
+                            }
+                        }
+
                         // Message Input Field Row
                         var textInput by remember { mutableStateOf("") }
+
+                        LaunchedEffect(voiceDictatedText) {
+                            voiceDictatedText?.let { spoken ->
+                                textInput = if (textInput.isBlank()) spoken else "$textInput $spoken"
+                                voiceDictatedText = null
+                            }
+                        }
+
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -416,6 +616,27 @@ fun ChatScreen(
                                     Icons.Default.AddPhotoAlternate, 
                                     contentDescription = "Attach Image", 
                                     tint = if (selectedImageUri != null) MaterialTheme.colorScheme.primary else Color.Gray
+                                )
+                            }
+
+                            // Voice Input Dictation Button
+                            IconButton(
+                                onClick = {
+                                    try {
+                                        val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                            putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Speak to Aura AI...")
+                                        }
+                                        voiceLauncher.launch(intent)
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Voice recognition not available on this device", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    Icons.Default.Mic,
+                                    contentDescription = "Voice Input",
+                                    tint = MaterialTheme.colorScheme.primary
                                 )
                             }
 
@@ -490,19 +711,19 @@ fun ChatScreen(
                     .padding(innerPadding)
             ) {
                 if (messages.isEmpty()) {
-                    // Welcome Screen Layout
+                    // Welcome Screen Layout with Interactive Starter Cards
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(24.dp),
+                            .padding(20.dp),
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Surface(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.size(110.dp),
-                            shadowElevation = 6.dp
+                            modifier = Modifier.size(96.dp),
+                            shadowElevation = 4.dp
                         ) {
                             AsyncImage(
                                 model = R.drawable.aura_hero_logo_1784436203588,
@@ -513,61 +734,132 @@ fun ChatScreen(
                                 contentScale = ContentScale.Crop
                             )
                         }
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                         Text(
                             text = "Welcome to Aura AI Chat!",
-                            style = MaterialTheme.typography.titleMedium,
+                            style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             textAlign = TextAlign.Center
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "All-in-one AI Assistant with Vision OCR, Deep Reasoning, Image Generation, and Exports.",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = "Choose a starter prompt or type your question below:",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
                         )
-                        Spacer(modifier = Modifier.height(20.dp))
-                        
-                        Card(
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                            ),
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text(
-                                    text = "💡 Quick Features & Usage:",
-                                    fontWeight = FontWeight.Bold,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.primary
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // 4 Interactive Starter Prompt Cards Grid (2x2)
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                StarterPromptCard(
+                                    icon = Icons.Default.Code,
+                                    title = "Coding Snippets",
+                                    description = "Kotlin Compose state counter",
+                                    modifier = Modifier.weight(1f),
+                                    onClick = {
+                                        viewModel.selectPersonality(ChatViewModel.Personality.DEVELOPER)
+                                        viewModel.sendMessage("Write a complete Kotlin Jetpack Compose StateFlow counter component with Material 3 styling.")
+                                    }
                                 )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text("• Tap 🖼️ to attach photos for Vision & OCR analysis.", style = MaterialTheme.typography.bodySmall)
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text("• Select 'DeepSeek R1' for step-by-step reasoning thoughts.", style = MaterialTheme.typography.bodySmall)
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text("• Use 🎨 button to generate high-resolution AI art.", style = MaterialTheme.typography.bodySmall)
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text("• Export formatted tables directly to Excel CSV with one tap.", style = MaterialTheme.typography.bodySmall)
+                                StarterPromptCard(
+                                    icon = Icons.Default.TableChart,
+                                    title = "Data & Excel",
+                                    description = "Q3 Sales revenue table",
+                                    modifier = Modifier.weight(1f),
+                                    onClick = {
+                                        viewModel.selectPersonality(ChatViewModel.Personality.DATA_EXTRACTOR)
+                                        viewModel.sendMessage("Generate a structured Sales & Revenue Comparison table for Q1 to Q4 with totals in CSV Excel format.")
+                                    }
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                StarterPromptCard(
+                                    icon = Icons.Default.Brush,
+                                    title = "AI Image Art",
+                                    description = "Cyberpunk neon city scene",
+                                    modifier = Modifier.weight(1f),
+                                    onClick = {
+                                        viewModel.generateImage("Cyberpunk neon futuristic city at night, high resolution 8k digital art")
+                                    }
+                                )
+                                StarterPromptCard(
+                                    icon = Icons.Default.Slideshow,
+                                    title = "Slide Presentation",
+                                    description = "5-slide AI app pitch deck",
+                                    modifier = Modifier.weight(1f),
+                                    onClick = {
+                                        viewModel.selectPersonality(ChatViewModel.Personality.SLIDES_CREATOR)
+                                        viewModel.sendMessage("Create a 5-slide pitch deck for a revolutionary AI Mobile App with clear section titles and bullet points.")
+                                    }
+                                )
                             }
                         }
                     }
                 } else {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        items(messages) { message ->
-                            MessageBubbleItem(message = message)
+                    val displayedMessages = if (isSearchActive && searchQuery.isNotBlank()) {
+                        messages.filter { it.content.contains(searchQuery, ignoreCase = true) }
+                    } else messages
+
+                    if (displayedMessages.isEmpty() && isSearchActive) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("لا توجد نتائج مطابقة لـ \"$searchQuery\"", color = Color.Gray, fontSize = 13.sp)
+                        }
+                    } else {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            items(displayedMessages) { message ->
+                                MessageBubbleItem(
+                                    message = message,
+                                    isLatestAssistant = message == messages.lastOrNull { it.role == "assistant" },
+                                    onDelete = { viewModel.deleteSingleMessage(it) },
+                                    onRegenerate = { viewModel.regenerateLastResponse() },
+                                    onReply = { viewModel.setReplyToMessage(it) },
+                                    onSpeak = { id, text -> toggleSpeak(id, text) },
+                                    isSpeaking = speakingMessageId == message.id
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    // Clear Conversation Confirmation Dialog
+    if (showClearConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirmDialog = false },
+            title = { Text("تأكيد مسح المحادثة") },
+            text = { Text("هل أنت تأكد من إزالة جميع الرسائل في هذه المحادثة؟ لا يمكن التراجع عن هذا الإجراء.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.clearActiveSessionMessages()
+                        showClearConfirmDialog = false
+                        Toast.makeText(context, "تم مسح رسائل المحادثة", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("مسح الكل", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirmDialog = false }) {
+                    Text("إلغاء")
+                }
+            }
+        )
     }
 
     // OpenRouter All Models Selection Dialog
@@ -579,6 +871,8 @@ fun ChatScreen(
             onSelectModel = { modelId ->
                 viewModel.selectModel(modelId)
                 showModelDialog = false
+                val shortName = modelId.split("/").lastOrNull() ?: modelId
+                Toast.makeText(context, "تم اختيار $shortName - المحادثة مستمرة بكامل السياق 🔄", Toast.LENGTH_SHORT).show()
             },
             onRefresh = { viewModel.fetchOpenRouterModels() },
             onDismiss = { showModelDialog = false }
@@ -981,7 +1275,56 @@ fun OpenRouterModelSelectionDialog(
 }
 
 @Composable
-fun MessageBubbleItem(message: ChatMessage) {
+fun StarterPromptCard(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    description: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+        ),
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Icon(
+                imageVector = icon,
+                contentDescription = title,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = title,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = description,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2
+            )
+        }
+    }
+}
+
+@Composable
+fun MessageBubbleItem(
+    message: ChatMessage,
+    isLatestAssistant: Boolean = false,
+    onDelete: (Int) -> Unit = {},
+    onRegenerate: () -> Unit = {},
+    onReply: (ChatMessage) -> Unit = {},
+    onSpeak: (Int, String) -> Unit = { _, _ -> },
+    isSpeaking: Boolean = false
+) {
     val isUser = message.role == "user"
     val alignment = if (isUser) Alignment.End else Alignment.Start
     val bubbleColor = if (isUser) {
@@ -1171,6 +1514,75 @@ fun MessageBubbleItem(message: ChatMessage) {
                 }
                 if (message.promptTokens > 0) PerformanceBadge(text = "📥 ${message.promptTokens} p")
                 if (message.completionTokens > 0) PerformanceBadge(text = "📤 ${message.completionTokens} c")
+            }
+        }
+
+        // Action Buttons Bar (Reply, Copy, Share, Read Aloud, Regenerate, Delete)
+        Row(
+            modifier = Modifier
+                .widthIn(max = 310.dp)
+                .padding(top = 2.dp, start = 2.dp, end = 2.dp),
+            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Reply to message
+            IconButton(
+                onClick = { onReply(message) },
+                modifier = Modifier.size(26.dp)
+            ) {
+                Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = "Reply", modifier = Modifier.size(13.dp), tint = MaterialTheme.colorScheme.primary)
+            }
+
+            // Copy text
+            IconButton(
+                onClick = {
+                    clipboardManager.setText(AnnotatedString(message.content))
+                    Toast.makeText(context, "Copied text!", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.size(26.dp)
+            ) {
+                Icon(Icons.Default.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(13.dp), tint = Color.Gray)
+            }
+
+            // Share text
+            IconButton(
+                onClick = { shareTextMessage(context, message.content) },
+                modifier = Modifier.size(26.dp)
+            ) {
+                Icon(Icons.Default.Share, contentDescription = "Share", modifier = Modifier.size(13.dp), tint = Color.Gray)
+            }
+
+            // Read Aloud TTS for assistant messages
+            if (!isUser) {
+                IconButton(
+                    onClick = { onSpeak(message.id, message.content) },
+                    modifier = Modifier.size(26.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isSpeaking) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                        contentDescription = "Read Aloud",
+                        modifier = Modifier.size(13.dp),
+                        tint = if (isSpeaking) MaterialTheme.colorScheme.primary else Color.Gray
+                    )
+                }
+            }
+
+            // Regenerate response for latest assistant message
+            if (isLatestAssistant) {
+                IconButton(
+                    onClick = onRegenerate,
+                    modifier = Modifier.size(26.dp)
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Regenerate", modifier = Modifier.size(13.dp), tint = MaterialTheme.colorScheme.primary)
+                }
+            }
+
+            // Delete message
+            IconButton(
+                onClick = { onDelete(message.id) },
+                modifier = Modifier.size(26.dp)
+            ) {
+                Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(13.dp), tint = Color.Gray.copy(alpha = 0.7f))
             }
         }
     }
@@ -1376,4 +1788,18 @@ fun parseBoldText(input: String): AnnotatedString {
         }
     }
     return builder.toAnnotatedString()
+}
+
+fun shareTextMessage(context: android.content.Context, text: String) {
+    try {
+        val sendIntent = android.content.Intent().apply {
+            action = android.content.Intent.ACTION_SEND
+            putExtra(android.content.Intent.EXTRA_TEXT, text)
+            type = "text/plain"
+        }
+        val shareIntent = android.content.Intent.createChooser(sendIntent, "Share AI Message")
+        context.startActivity(shareIntent)
+    } catch (e: Exception) {
+        Toast.makeText(context, "Sharing failed", Toast.LENGTH_SHORT).show()
+    }
 }
